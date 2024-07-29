@@ -234,6 +234,9 @@ function Invoke-DbaDbLogShipping {
         Folder to be used to restore the database log files. Only used when parameter GenerateFullBackup or UseExistingFullBackup are set.
         If the parameter is not set the default transaction log folder of the secondary instance will be used.
         If the folder is set but doesn't exist we will try to create the folder.
+		
+	.PARAMETER ReuseSourceFolderStructure
+		When restoring Source databases, attempt to restore all MDF/NDF/LDF files to the same path on Destination as they had in Source.
 
     .PARAMETER RestoreDelay
         In case a delay needs to be set for the restore.
@@ -342,9 +345,7 @@ function Invoke-DbaDbLogShipping {
         Prompts you for confirmation before executing any changing operations within the command.
 
     .PARAMETER EnableException
-        By default, when something goes wrong we try to catch it, interpret it and give you a friendly warning message.
-        This avoids overwhelming you with "sea of red" exceptions, but is inconvenient because it basically disables advanced scripting.
-        Using this switch turns this "nice by default" feature off and enables you to catch exceptions with your own try/catch.
+        Use this switch to disable any kind of verbose messages
 
     .PARAMETER Force
         The force parameter will ignore some errors in the parameters and assume defaults.
@@ -480,6 +481,7 @@ function Invoke-DbaDbLogShipping {
         [switch]$PrimaryThresholdAlertEnabled,
         [string]$RestoreDataFolder,
         [string]$RestoreLogFolder,
+		[switch]$ReuseSourceFolderStructure,
         [int]$RestoreDelay,
         [int]$RestoreAlertThreshold,
         [string]$RestoreJob,
@@ -930,20 +932,20 @@ function Invoke-DbaDbLogShipping {
                                     if (-not $IsDestinationLocal -and $DestinationCredential) {
                                         Invoke-Command2 -ComputerName $DestinationServerName -Credential $DestinationCredential -ScriptBlock {
                                             Write-Message -Message "Creating copy destination folder $CopyDestinationFolder" -Level Verbose
-                                            $null = New-Item -Path $CopyDestinationFolder -ItemType Directory -Force:$Force
+                                            New-Item -Path $CopyDestinationFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force | Out-Null
                                         }
                                     }
                                     # If the server is local and the credential is set
                                     elseif ($DestinationCredential) {
                                         Invoke-Command2 -Credential $DestinationCredential -ScriptBlock {
                                             Write-Message -Message "Creating copy destination folder $CopyDestinationFolder" -Level Verbose
-                                            $null = New-Item -Path $CopyDestinationFolder -ItemType Directory -Force:$Force
+                                            New-Item -Path $CopyDestinationFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force | Out-Null
                                         }
                                     }
                                     # If the server is local and the credential is not set
                                     else {
                                         Write-Message -Message "Creating copy destination folder $CopyDestinationFolder" -Level Verbose
-                                        $null = New-Item -Path $CopyDestinationFolder -ItemType Directory -Force:$Force
+                                        New-Item -Path $CopyDestinationFolder -Force:$Force -ItemType Directory | Out-Null
                                     }
                                     Write-Message -Message "Copy destination $CopyDestinationFolder created." -Level Verbose
                                 } catch {
@@ -965,7 +967,7 @@ function Invoke-DbaDbLogShipping {
                         # Try to create the copy destination on the local server
                         try {
                             Write-Message -Message "Creating copy destination folder $CopyDestinationFolder" -Level Verbose
-                            $null = New-Item -Path $CopyDestinationFolder -ItemType Directory -Force:$Force
+                            New-Item $CopyDestinationFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force | Out-Null
                             Write-Message -Message "Copy destination $CopyDestinationFolder created." -Level Verbose
                         } catch {
                             $setupResult = "Failed"
@@ -1092,7 +1094,7 @@ function Invoke-DbaDbLogShipping {
 
                             Invoke-Command2 -Credential $SourceCredential -ScriptBlock {
                                 Write-Message -Message "Creating backup folder $DatabaseSharedPath" -Level Verbose
-                                $null = New-Item -Path $DatabaseSharedPath -ItemType Directory -Force:$Force
+                                $null = New-Item -Path $DatabaseSharedPath -ItemType Directory -Credential $SourceCredential -Force:$Force
                             }
                         } catch {
                             $setupResult = "Failed"
@@ -1195,7 +1197,7 @@ function Invoke-DbaDbLogShipping {
                                 try {
                                     Invoke-Command2 -Credential $DestinationCredential -ScriptBlock {
                                         Write-Message -Message "Creating data folder $DatabaseRestoreDataFolder" -Level Verbose
-                                        $null = New-Item -Path $DatabaseRestoreDataFolder -ItemType Directory -Force:$Force
+                                        $null = New-Item -Path $DatabaseRestoreDataFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force
                                     }
                                 } catch {
                                     $setupResult = "Failed"
@@ -1215,7 +1217,7 @@ function Invoke-DbaDbLogShipping {
 
                                     Invoke-Command2 -Credential $DestinationCredential -ScriptBlock {
                                         Write-Message -Message "Restore log folder $DatabaseRestoreLogFolder not found. Trying to create it.." -Level Verbose
-                                        $null = New-Item -Path $DatabaseRestoreLogFolder -ItemType Directory -Force:$Force
+                                        $null = New-Item -Path $DatabaseRestoreLogFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force
                                     }
                                 } catch {
                                     $setupResult = "Failed"
@@ -1310,7 +1312,7 @@ function Invoke-DbaDbLogShipping {
                             try {
                                 Invoke-Command2 -Credential $DestinationCredential -ScriptBlock {
                                     Write-Message -Message "Copy destination folder $DatabaseCopyDestinationFolder not found. Trying to create it.. ." -Level Verbose
-                                    $null = New-Item -Path $DatabaseCopyDestinationFolder -ItemType Directory -Force:$Force
+                                    $null = New-Item -Path $DatabaseCopyDestinationFolder -ItemType Directory -Credential $DestinationCredential -Force:$Force
                                 }
                             } catch {
                                 $setupResult = "Failed"
@@ -1423,35 +1425,92 @@ function Invoke-DbaDbLogShipping {
                         if ($GenerateFullBackup -or $UseExistingFullBackup -or $UseBackupFolder) {
                             try {
                                 Write-Message -Message "Start database restore" -Level Verbose
-                                if ($NoRecovery -or (-not $Standby)) {
-                                    if ($Force) {
-                                        $null = Restore-DbaDatabase -SqlInstance $destInstance `
-                                            -SqlCredential $DestinationSqlCredential `
-                                            -Path $BackupPath `
-                                            -DestinationFilePrefix $SecondaryDatabasePrefix `
-                                            -DestinationFileSuffix $SecondaryDatabaseSuffix `
-                                            -DestinationDataDirectory $DatabaseRestoreDataFolder `
-                                            -DestinationLogDirectory $DatabaseRestoreLogFolder `
-                                            -DatabaseName $SecondaryDatabase `
-                                            -DirectoryRecurse `
-                                            -NoRecovery `
-                                            -WithReplace
-                                    } else {
-                                        $null = Restore-DbaDatabase -SqlInstance $destInstance `
-                                            -SqlCredential $DestinationSqlCredential `
-                                            -Path $BackupPath `
-                                            -DestinationFilePrefix $SecondaryDatabasePrefix `
-                                            -DestinationFileSuffix $SecondaryDatabaseSuffix `
-                                            -DestinationDataDirectory $DatabaseRestoreDataFolder `
-                                            -DestinationLogDirectory $DatabaseRestoreLogFolder `
-                                            -DatabaseName $SecondaryDatabase `
-                                            -DirectoryRecurse `
-                                            -NoRecovery
-                                    }
-                                }
+								# ReuseSourceFolderStructure should supercede a specified folder for logs or data
+								if ($ReuseSourceFolderStructure -and (-not $Standby)) {
+									if ($NoRecovery) {
+										if ($Force) {
+											$null = Restore-DbaDatabase -SqlInstance $destInstance `
+												-SqlCredential $DestinationSqlCredential `
+												-Path $BackupPath `
+												-DestinationFilePrefix $SecondaryDatabasePrefix `
+												-DestinationFileSuffix $SecondaryDatabaseSuffix `
+												-ReuseSourceFolderStructure `
+												-DatabaseName $SecondaryDatabase `
+												-DirectoryRecurse `
+												-NoRecovery `
+												-WithReplace
+										} else {
+											$null = Restore-DbaDatabase -SqlInstance $destInstance `
+												-SqlCredential $DestinationSqlCredential `
+												-Path $BackupPath `
+												-DestinationFilePrefix $SecondaryDatabasePrefix `
+												-DestinationFileSuffix $SecondaryDatabaseSuffix `
+												-ReuseSourceFolderStructure `
+												-DatabaseName $SecondaryDatabase `
+												-DirectoryRecurse `
+												-NoRecovery
+										}
+									}
+								}
+								if (-not $ReuseSourceFolderStructure -and (-not $Standby)) {
+									if ($NoRecovery) {
+										if ($Force) {
+											$null = Restore-DbaDatabase -SqlInstance $destInstance `
+												-SqlCredential $DestinationSqlCredential `
+												-Path $BackupPath `
+												-DestinationFilePrefix $SecondaryDatabasePrefix `
+												-DestinationFileSuffix $SecondaryDatabaseSuffix `
+												-DestinationDataDirectory $DatabaseRestoreDataFolder `
+												-DestinationLogDirectory $DatabaseRestoreLogFolder `
+												-DatabaseName $SecondaryDatabase `
+												-DirectoryRecurse `
+												-NoRecovery `
+												-WithReplace
+										} else {
+											$null = Restore-DbaDatabase -SqlInstance $destInstance `
+												-SqlCredential $DestinationSqlCredential `
+												-Path $BackupPath `
+												-DestinationFilePrefix $SecondaryDatabasePrefix `
+												-DestinationFileSuffix $SecondaryDatabaseSuffix `
+												-DestinationDataDirectory $DatabaseRestoreDataFolder `
+												-DestinationLogDirectory $DatabaseRestoreLogFolder `
+												-DatabaseName $SecondaryDatabase `
+												-DirectoryRecurse `
+												-NoRecovery
+										}
+									}
+								}
+								
+									
 
                                 # If the database needs to be in standby
-                                if ($Standby) {
+                                if ($Standby -and ($ReuseSourceFolderStructure)) {
+                                    # Setup the path to the standby file
+                                    $StandbyDirectory = "$DatabaseCopyDestinationFolder"
+
+                                    # Check if credentials need to be used
+                                    if ($DestinationSqlCredential) {
+                                        $null = Restore-DbaDatabase -SqlInstance $destInstance `
+                                            -SqlCredential $DestinationSqlCredential `
+                                            -Path $BackupPath `
+                                            -DestinationFilePrefix $SecondaryDatabasePrefix `
+                                            -DestinationFileSuffix $SecondaryDatabaseSuffix `
+                                            -ReuseSourceFoldereStructure `
+                                            -DatabaseName $SecondaryDatabase `
+                                            -DirectoryRecurse `
+                                            -StandbyDirectory $StandbyDirectory
+                                    } else {
+                                        $null = Restore-DbaDatabase -SqlInstance $destInstance `
+                                            -Path $BackupPath `
+                                            -DestinationFilePrefix $SecondaryDatabasePrefix `
+                                            -DestinationFileSuffix $SecondaryDatabaseSuffix `
+                                            -ReuseSourceFoldereStructure `
+                                            -DatabaseName $SecondaryDatabase `
+                                            -DirectoryRecurse `
+                                            -StandbyDirectory $StandbyDirectory
+                                    }
+                                }
+								if ($Standby -and (-not $ReuseSourceFolderStructure)) {
                                     # Setup the path to the standby file
                                     $StandbyDirectory = "$DatabaseCopyDestinationFolder"
 
@@ -1463,7 +1522,7 @@ function Invoke-DbaDbLogShipping {
                                             -DestinationFilePrefix $SecondaryDatabasePrefix `
                                             -DestinationFileSuffix $SecondaryDatabaseSuffix `
                                             -DestinationDataDirectory $DatabaseRestoreDataFolder `
-                                            -DestinationLogDirectory $DatabaseRestoreLogFolder `
+											-DestinationLogDirectory $DatabaseRestoreLogFolder `
                                             -DatabaseName $SecondaryDatabase `
                                             -DirectoryRecurse `
                                             -StandbyDirectory $StandbyDirectory
@@ -1473,7 +1532,7 @@ function Invoke-DbaDbLogShipping {
                                             -DestinationFilePrefix $SecondaryDatabasePrefix `
                                             -DestinationFileSuffix $SecondaryDatabaseSuffix `
                                             -DestinationDataDirectory $DatabaseRestoreDataFolder `
-                                            -DestinationLogDirectory $DatabaseRestoreLogFolder `
+											-DestinationLogDirectory $DatabaseRestoreLogFolder `
                                             -DatabaseName $SecondaryDatabase `
                                             -DirectoryRecurse `
                                             -StandbyDirectory $StandbyDirectory
